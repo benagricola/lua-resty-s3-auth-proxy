@@ -11,7 +11,7 @@ local str_to_hex   = str.to_hex
 local resty_hmac   = require('resty.hmac')
 local resty_sha256 = require('resty.sha256')
 local os           = require('os')
-local os_time      = os.time
+local os_date      = os.date
 
 -- Constants
 local CONST_AWS_HMAC_TYPE         = 'AWS4-HMAC-SHA256'
@@ -56,12 +56,12 @@ end
 
 
 local function iso8601_full(t)
-    return os_date('!%Y%m%dT%H%M%SZ', t)
+    return os_date('!%Y%m%dT%H%M%SZ', tonumber(t))
 end
 
 
 local function iso8601_short(t)
-    return os_date('!%Y%m%d', t)
+    return os_date('!%Y%m%d', tonumber(t))
 end
 
 
@@ -223,16 +223,16 @@ function S3AuthProxy:get_canonical_request(headers, payload)
     local signed_headers    = {}
     local canonical_headers = {}
     for _, header in ipairs(headers) do
-        tbl_insert(signed_headers, header[0])
-        tbl_insert(canonical_headers, header[0] .. ':' .. header[1])
+        tbl_insert(signed_headers, header[1])
+        tbl_insert(canonical_headers, header[1] .. ':' .. header[2])
     end
 
     return tbl_concat({
         ngx.var.request_method,
         ngx.var.request_uri,
-        ngx.var.args,
-        tbl_concat(canonical_headers, "\n"),
-        tbl_concat(signed_headers, ";"),
+        ngx.var.args or '',
+        tbl_concat(canonical_headers, "\n") or '',
+        tbl_concat(signed_headers, ";") or '',
         sha256_string(payload)
     },"\n")
 end
