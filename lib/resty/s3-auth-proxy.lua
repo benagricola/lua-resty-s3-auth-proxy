@@ -70,20 +70,31 @@ local S3AuthProxy = {}
 
 
 function S3AuthProxy:new(config)
-    if not config['shared_dict'] then
-        ngx_log(ERR, 'S3AuthProxy requires "shared_dict" config option to be an ngx_lua shared dict!')
+    if not config['keys'] then
+        ngx_log(ERR, 'S3AuthProxy requires "keys" config option to be a table!')
         return None
     end
 
-    local o    = { config = config, keypairs = config['shared_dict'] }
+    local o    = { config = config, keypairs = {}, keycount = 0 }
 
     local self = setmetatable(o, {__index = S3AuthProxy})
+    self:load_keys(config['keys'])
     return self
 end
 
 
+function S3AuthProxy:load_keys(keys)
+    for fqdn, secrets in pairs(keys) do
+        self['keypairs'][secrets['aws_access_key_id']] = { fqdn = fqdn, aws_secret_access_key = secrets['aws_secret_access_key'] }
+        self['keycount'] = self['keycount'] + 1
+    end
+
+    ngx_log(INFO, 'Loaded ', self['keycount'], ' Access Keys...')
+end
+
+
 function S3AuthProxy:authenticate()
-    local keypairs = self.keypairs
+    local keypairs = self['keypairs']
     local headers = ngx.req.get_headers()
 
     ngx_log(INFO, cjson.encode(headers))
@@ -139,7 +150,7 @@ function S3AuthProxy:authenticate()
 	return xml_invalid_access_key_id()
     end
 
-    local access_details = keypairs:get(cred['access_key_id'])
+    local access_details = keypairs[cred['access_key_id']]
 
     if not access_details then
 	ngx_log(ERR, 'access_key_id ', cred['access_key_id'], ' not found in configuration.')
