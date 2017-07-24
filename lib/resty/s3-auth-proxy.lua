@@ -14,7 +14,9 @@ local os           = require('os')
 local os_time      = os.time
 
 -- Constants
-local CONST_AWS_HMAC_TYPE = 'AWS4-HMAC-SHA256'
+local CONST_AWS_HMAC_TYPE         = 'AWS4-HMAC-SHA256'
+local CONST_AWS_PAYLOAD_STREAMING = 'STREAMING-AWS4-HMAC-SHA256-PAYLOAD'
+local CONST_AWS_PAYLOAD_UNSIGNED  = 'UNSIGNED-PAYLOAD'
 
 -- Internal functions  for XML handling
 local xml_error_format = [[<?xml version="1.0" encoding="UTF-8"?>
@@ -162,17 +164,19 @@ function S3AuthProxy:authenticate()
         tbl_insert(signed_header_pairs, {h, headers[h]})
     end
 
-    ngx_log(INFO, cjson.encode(cred), cjson.encode(signed_headers))
-
     local payload
 
-    if amz_content == 'STREAMING-AWS4-HMAC-SHA256-PAYLOAD' then
-        -- Signed Chunked upload
-    elseif amz_content == 'UNSIGNED-PAYLOAD' then
-        -- Unsigned upload
+    -- Signed Chunked upload
+    if amz_content == CONST_AWS_PAYLOAD_STREAMING then
+	ngx_log(ERR, CONST_AWS_PAYLOAD_STREAMING, ' is not supported.')
+	return xml_invalid_request(CONST_AWS_PAYLOAD_STREAMING .. ' is not supported.')
+
+    -- Unsigned upload
+    elseif amz_content == CONST_AWS_PAYLOAD_UNSIGNED then
         payload = ''
+
+    -- Signed single upload
     else
-        -- Signed single upload
         ngx.req.read_body()
         payload = ngx.req.get_body_data()
     end
