@@ -85,7 +85,7 @@ function S3AuthProxy:new(config)
         return nil
     end
 
-    local o    = { config = config, keypairs = {}, keycount = 0 }
+    local o    = { config = config, keypairs = {}, keycount = 0, secret_access_key = config['secret_access_key'] or '', access_key_id = config['access_key_id'] or '' }
 
     local self = setmetatable(o, {__index = S3AuthProxy})
     self:load_keys(config['keys'])
@@ -230,21 +230,7 @@ function S3AuthProxy:authenticate()
 
     local canonical_request = self:get_canonical_request(signed_header_pairs, payload)
 
-    local string_to_sign = tbl_concat({
-        CONST_AWS_HMAC_TYPE,
-        amz_date,
-        cred['scope'],
-        sha256_string(canonical_request)
-    }, "\n")
-
-    local h = resty_hmac:new()
-
-    local date_key    = h:digest('sha256', 'AWS4' .. access_details['aws_secret_access_key'], cred['date'], true)
-    local region_key  = h:digest('sha256', date_key, cred['region'], true)
-    local service_key = h:digest('sha256', region_key, cred['service'], true)
-    local signing_key = h:digest('sha256', service_key, 'aws4_request', true)
-
-    local signature = h:digest('sha256', signing_key, string_to_sign, false)
+    local signature = self:generate_signature(amz_date, cred['scope'], canonical_request, access_details['aws_secret_access_key'], cred['region'], cred['service'])
 
     -- Check if signature matches
     if auth_args['signature'] ~= signature then
@@ -271,6 +257,23 @@ function S3AuthProxy:authenticate()
             return xml_invalid_bucket()
         end
     end
+
+    -- Generate new signature based on local secret_access_key
+    local new_signature = self:generate_signature(amz_date, cred['scope'], canonical_request, self['secret_access_key'], cred['region'], cred['service'])
+
+    -- Push local access_key_id into creds
+    cred['access_key_id'] = self['access_key_id']
+
+    local auth = tbl_concat({
+        CONST_AWS_HMAC_TYPE,
+        tbl_concat({
+            'Credential='    .. tbl_concat(cred, '/'),
+            'SignedHeaders=' .. tbl_concat(signed_headers, ';'),
+            'Signature='     .. new_signature,
+        }, ',')
+    }, ' ')
+
+    ngx.req.set_header('Authorization', auth)
 end
 
 
@@ -293,6 +296,25 @@ function S3AuthProxy:get_canonical_request(headers, payload)
         tbl_concat(signed_headers, ";") or '',
         sha256_string(payload)
     },"\n")
+end
+
+
+function S3AuthProxy:generate_signature(date, scope, canonical_request, secret_access_key, region, service)
+    local string_to_sign = tbl_concat({
+        CONST_AWS_HMAC_TYPE,
+        date,
+        scope,
+        sha256_string(canonical_request)
+    }, "\n")
+
+    local h = resty_hmac:new()
+
+    local date_key    = h:digest('sha256', 'AWS4' .. secret_access_key, str_sub(date,0,8), true)
+    local region_key  = h:digest('sha256', date_key, region, true)
+    local service_key = h:digest('sha256', region_key, service, true)
+    local signing_key = h:digest('sha256', service_key, 'aws4_request', true)
+
+    return h:digest('sha256', signing_key, string_to_sign, false)
 end
 
 return S3AuthProxy
