@@ -119,7 +119,7 @@ function S3AuthProxy:load_keys(keys)
             else
                 cur_bucket_name = cur_label
             end
-            tbl_insert(valid_bucket_names, cur_bucket_name)
+            tbl_insert(valid_bucket_names, '/' .. cur_bucket_name .. '/')
         end
 
         self['keypairs'][secrets['aws_access_key_id']] = { fqdn = fqdn, aws_secret_access_key = secrets['aws_secret_access_key'], buckets = valid_bucket_names }
