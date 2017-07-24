@@ -228,7 +228,14 @@ function S3AuthProxy:authenticate()
         payload = ngx.req.get_body_data()
     end
 
-    local canonical_request = self:get_canonical_request(signed_header_pairs, payload)
+    local signed_headers    = {}
+    local canonical_headers = {}
+    for _, header in ipairs(headers) do
+        tbl_insert(signed_headers, header[1])
+        tbl_insert(canonical_headers, header[1] .. ':' .. header[2])
+    end
+
+    local canonical_request = self:get_canonical_request(signed_headers, canonical_headers, payload)
 
     local signature = self:generate_signature(amz_date, cred['scope'], canonical_request, access_details['aws_secret_access_key'], cred['region'], cred['service'])
 
@@ -280,12 +287,6 @@ end
 function S3AuthProxy:get_canonical_request(headers, payload)
     local vars = ngx.var
     -- Generate signed and canonical header tables from input
-    local signed_headers    = {}
-    local canonical_headers = {}
-    for _, header in ipairs(headers) do
-        tbl_insert(signed_headers, header[1])
-        tbl_insert(canonical_headers, header[1] .. ':' .. header[2])
-    end
 
     return tbl_concat({
         vars.request_method,
