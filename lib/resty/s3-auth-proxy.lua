@@ -284,7 +284,7 @@ function S3AuthProxy:authenticate()
 end
 
 
-function S3AuthProxy:get_canonical_request(headers, payload)
+function S3AuthProxy:get_canonical_request(signed_headers, canonical_headers, payload)
     local vars = ngx.var
     -- Generate signed and canonical header tables from input
 
