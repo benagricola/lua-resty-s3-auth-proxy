@@ -230,7 +230,7 @@ function S3AuthProxy:authenticate()
 
     local signed_headers    = {}
     local canonical_headers = {}
-    for _, header in ipairs(headers) do
+    for _, header in ipairs(signed_header_pairs) do
         tbl_insert(signed_headers, header[1])
         tbl_insert(canonical_headers, header[1] .. ':' .. header[2])
     end
@@ -268,13 +268,10 @@ function S3AuthProxy:authenticate()
     -- Generate new signature based on local secret_access_key
     local new_signature = self:generate_signature(amz_date, cred['scope'], canonical_request, self['secret_access_key'], cred['region'], cred['service'])
 
-    -- Push local access_key_id into creds
-    cred['access_key_id'] = self['access_key_id']
-
     local auth = tbl_concat({
         CONST_AWS_HMAC_TYPE,
         tbl_concat({
-            'Credential='    .. tbl_concat(cred, '/'),
+            'Credential='    .. tbl_concat({ self['access_key_id'], cred['scope'] }, '/'),
             'SignedHeaders=' .. tbl_concat(signed_headers, ';'),
             'Signature='     .. new_signature,
         }, ',')
