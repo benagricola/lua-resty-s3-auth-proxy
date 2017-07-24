@@ -196,12 +196,13 @@ function S3AuthProxy:authenticate()
 
     local string_to_sign = tbl_concat({
         CONST_AWS_HMAC_TYPE,
-        iso8601_full(amz_date),
+        amz_date,
         cred['scope'],
         sha256_string(canonical_request)
     }, "\n")
 
     local h = resty_hmac:new()
+
     local date_key    = h:digest('sha256', 'AWS4' .. access_details['aws_secret_access_key'], cred['date'], true)
     local region_key  = h:digest('sha256', date_key, cred['region'], true)
     local service_key = h:digest('sha256', region_key, cred['service'], true)
@@ -232,6 +233,7 @@ function S3AuthProxy:get_canonical_request(headers, payload)
         ngx.var.request_uri,
         ngx.var.args or '',
         tbl_concat(canonical_headers, "\n") or '',
+        '', -- Add newline to end of canonical headers, always
         tbl_concat(signed_headers, ";") or '',
         sha256_string(payload)
     },"\n")
