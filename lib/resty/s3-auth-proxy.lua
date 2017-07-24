@@ -80,15 +80,15 @@ local S3AuthProxy = {}
 
 
 function S3AuthProxy:new(config)
-    if not config['keys'] then
-        ngx_log(ERR, 'S3AuthProxy requires "keys" config option to be a table!')
+    if not config['client_keys'] then
+        ngx_log(ERR, 'S3AuthProxy requires "client_keys" config option to be a table!')
         return nil
     end
 
     local o    = { config = config, keypairs = {}, keycount = 0, secret_access_key = config['secret_access_key'] or '', access_key_id = config['access_key_id'] or '' }
 
     local self = setmetatable(o, {__index = S3AuthProxy})
-    self:load_keys(config['keys'])
+    self:load_keys(config['client_keys'])
     return self
 end
 
