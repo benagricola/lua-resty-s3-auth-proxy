@@ -1,7 +1,10 @@
 local ngx_log      = ngx.log
+require "resty.core"
 local ERR          = ngx.ERR
 local INFO         = ngx.INFO
 local DEBUG        = ngx.DEBUG
+local ngx_re       = require "ngx.re"
+local re_split     = ngx_re.split
 local re_match     = ngx.re.match
 local re_gmatch    = ngx.re.gmatch
 local str_lower    = string.lower
@@ -97,27 +100,22 @@ function S3AuthProxy:load_keys(keys)
     for fqdn, secrets in pairs(keys) do
 
         -- Split FQDN into parts
-        local fqdn_parts, err = re_gmatch(fqdn, "(?<label>[^\\.]+)\\.?", "jo")
+        local fqdn_parts, err = re_split(fqdn, '.', "jo")
 
         if not fqdn_parts then
             ngx_log(ERR, 'fqdn_parts regex failed: ', err)
             return nil
         end
 
-        -- Build valid bucket names from fqdn parts (e.g. puppet-test01, puppet-test01.ash2, puppet-test01.ash2.squiz, puppet-test01.ash2.squiz.co, etc - all valid)
+        -- Build valid bucket names from fqdn parts (e.g. puppet-test01, puppet-test01.dc2, puppet-test01.dc2.domain, puppet-test01.dc2.domain.co, etc - all valid)
         local valid_bucket_names  = {}
         local cur_bucket_name     = nil
 
-        while true do
-            local arg, err = fqdn_parts()
-            if not arg then
-                break
-            end
-            local cur_label = arg['label']
+        for _, label in ipairs(fqdn_parts) do
             if cur_bucket_name then
-                cur_bucket_name = cur_bucket_name .. '.' .. cur_label
+                cur_bucket_name = cur_bucket_name .. '.' .. label
             else
-                cur_bucket_name = cur_label
+                cur_bucket_name = label
             end
             tbl_insert(valid_bucket_names, '/' .. cur_bucket_name .. '/')
         end
@@ -141,73 +139,69 @@ function S3AuthProxy:authenticate()
 
     -- Block requests without an auth header
     if not auth_header then
-	return xml_invalid_access_key_id()
+        return xml_invalid_access_key_id()
     end
 
     -- Parse auth header
-    local auth_parts, err = re_match(auth_header, "(?<auth_type>[^\\s]+) (?<remaining>.+)", "jo")
+    local auth_parts, err = re_split(auth_header, ' ', 'jo', nil, 2)
 
     if not auth_parts then
-	ngx_log(ERR, 'auth_parts regex failed: ', err)
-	return xml_invalid_access_key_id()
+        ngx_log(ERR, 'auth_parts split failed: ', err)
+        return xml_invalid_access_key_id()
     end
 
     -- Validate auth_type
-    local auth_type, auth_remaining = auth_parts[0], auth_parts[1]
+    local auth_type, auth_remaining = auth_parts[1], auth_parts[2]
 
-    if auth_parts['auth_type'] ~= CONST_AWS_HMAC_TYPE then
-	return xml_invalid_request('Please use ' .. CONST_AWS_HMAC_TYPE)
+    if auth_type ~= CONST_AWS_HMAC_TYPE then
+        return xml_invalid_request('Please use ' .. CONST_AWS_HMAC_TYPE)
     end
 
     -- Parse remaining auth header variables
-    local auth_remaining_items, err = re_gmatch(auth_parts['remaining'], "(?<name>[^=]+)=(?<value>[^,]+)*,?", "jo")
+    local auth_remaining_items, err = re_split(auth_remaining, ',', 'jo')
 
     if not auth_remaining_items then
-	ngx_log(ERR, 'auth_remaining_items regex failed: ', err)
-	return xml_invalid_request('Authorization header invalid.')
+        ngx_log(ERR, 'auth_remaining_items split failed: ', err)
+        return xml_invalid_request('Authorization header invalid.')
     end
 
     local auth_args  = {}
-    while true do
-        local arg, err = auth_remaining_items()
-        if not arg then
-            break
+    for _, auth_item in ipairs(auth_remaining_items) do
+        local auth_pair, err = re_split(auth_item, '=', 'jo', nil, 2)
+        if not auth_pair then
+            ngx_log(ERR, 'auth_pair split failed: ', err)
+            return xml_invalid_request('Authorization header invalid.')
         end
-        local arg_name      = str_lower(arg['name']) -- Normalize all args
-        local arg_value     = arg['value']
-        auth_args[arg_name] = arg_value
+
+        auth_args[auth_pair[1]] = auth_pair[2]
     end
 
-    -- Parse credential
+    -- Parse credential - no split here as we want to validate the contents of each field
     local cred, err = re_match(auth_args['credential'], "(?<access_key_id>[A-Z0-9]+)\\/(?<scope>(?<date>[0-9]{8})\\/(?<region>[a-zA-Z0-9\\-]+)\\/(?<service>[a-zA-Z0-9\\-]+)\\/aws4_request)", "jo")
 
     if not cred then
-	ngx_log(ERR, 'cred regex failed: ', err)
-	return xml_invalid_access_key_id()
+        ngx_log(ERR, 'cred regex failed: ', err)
+        return xml_invalid_access_key_id()
     end
 
     local access_details = keypairs[cred['access_key_id']]
 
     if not access_details then
-	ngx_log(ERR, 'access_key_id ', cred['access_key_id'], ' not found in configuration.')
-	return xml_invalid_access_key_id()
+        ngx_log(ERR, 'access_key_id ', cred['access_key_id'], ' not found in configuration.')
+        return xml_invalid_access_key_id()
     end
 
     -- Parse signed headers
-    local signed_header_items, err = re_gmatch(auth_args['signedheaders'], "(?<header>[a-z0-9\\-]+);?", "jo")
+    local signed_header_items, err = re_split(auth_args['signedheaders'], ';', 'jo')
 
     if not signed_header_items then
-	ngx_log(ERR, 'signed_header_items regex failed: ', err)
-	return xml_invalid_access_key_id()
+        ngx_log(ERR, 'signed_header_items split failed: ', err)
+        return xml_invalid_access_key_id()
     end
 
     local signed_header_pairs  = {}
-    while true do
-        local arg, err = signed_header_items()
-        if not arg then
-            break
-        end
-        local h = str_lower(arg['header'])
+    for _, signed_header in ipairs(signed_header_items) do
+        local h = str_lower(signed_header)
         tbl_insert(signed_header_pairs, {h, headers[h]})
     end
 
@@ -215,8 +209,8 @@ function S3AuthProxy:authenticate()
 
     -- Signed Chunked upload
     if amz_content == CONST_AWS_PAYLOAD_STREAMING then
-	ngx_log(ERR, CONST_AWS_PAYLOAD_STREAMING, ' is not supported.')
-	return xml_invalid_request(CONST_AWS_PAYLOAD_STREAMING .. ' is not supported.')
+        ngx_log(ERR, CONST_AWS_PAYLOAD_STREAMING, ' is not supported.')
+        return xml_invalid_request(CONST_AWS_PAYLOAD_STREAMING .. ' is not supported.')
 
     -- Unsigned upload
     elseif amz_content == CONST_AWS_PAYLOAD_UNSIGNED then
