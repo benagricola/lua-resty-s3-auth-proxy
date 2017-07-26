@@ -18,11 +18,13 @@ local resty_sha256 = require('resty.sha256')
 local resty_md5    = require('resty.md5')
 local os           = require('os')
 local os_date      = os.date
+local io_open      = io.open
 
 -- Constants
 local CONST_AWS_HMAC_TYPE         = 'AWS4-HMAC-SHA256'
 local CONST_AWS_PAYLOAD_STREAMING = 'STREAMING-AWS4-HMAC-SHA256-PAYLOAD'
 local CONST_AWS_PAYLOAD_UNSIGNED  = 'UNSIGNED-PAYLOAD'
+local CONST_PAYLOAD_HASH_EMPTY    = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
 
 -- Internal functions  for XML handling
 local xml_error_format = [[<?xml version="1.0" encoding="UTF-8"?>
@@ -210,7 +212,7 @@ function S3AuthProxy:authenticate()
         tbl_insert(signed_header_pairs, {h, headers[h]})
     end
 
-    local payload
+    local payload_hash
 
     -- Signed Chunked upload
     if amz_content == CONST_AWS_PAYLOAD_STREAMING then
@@ -219,14 +221,15 @@ function S3AuthProxy:authenticate()
 
     -- Unsigned upload
     elseif amz_content == CONST_AWS_PAYLOAD_UNSIGNED then
-        payload = ''
+        payload_hash = CONST_PAYLOAD_HASH_EMPTY
 
     -- Signed single upload
     else
-        ngx.req.read_body()
-        payload = ngx.req.get_body_data() or ''
+        payload_hash = self:hash_body()
     end
 
+
+    -- Generate signed and canonical header tables from input
     local signed_headers        = {}
     local canonical_headers     = {}
     local new_signed_headers    = {}
@@ -241,20 +244,12 @@ function S3AuthProxy:authenticate()
         end
     end
 
-    local canonical_request = self:get_canonical_request(signed_headers, canonical_headers, payload)
+    local canonical_request = self:get_canonical_request(signed_headers, canonical_headers, payload_hash)
 
     local signature = self:generate_signature(amz_date, cred['scope'], canonical_request, access_details['aws_secret_access_key'], cred['region'], cred['service'])
 
-    ngx_log(DEBUG, 'Sorted Query String: ', self:get_encoded_args())
-    ngx_log(DEBUG, 'C Length: ', str_len(payload))
-    ngx_log(DEBUG, 'H Length: ', headers['Content-Length'])
-    ngx_log(DEBUG, 'C Payload SHA256: ', sha256_string(payload))
-    ngx_log(DEBUG, 'H Payload SHA256: ', amz_content)
-
-    if headers['Content-MD5'] then
-        ngx_log(DEBUG, 'C Payload MD5: ', md5_string(payload))
-        ngx_log(DEBUG, 'H Payload MD5: ', str_to_hex(ngx.decode_base64(headers['Content-MD5'])))
-    end
+    ngx_log(DEBUG, 'Calculated Payload SHA256: ', payload_hash)
+    ngx_log(DEBUG, 'Header     Payload SHA256: ', amz_content)
 
     -- Check if signature matches
     if auth_args['signature'] ~= signature then
@@ -300,6 +295,46 @@ function S3AuthProxy:authenticate()
     ngx.req.set_header('Authorization', auth)
 end
 
+function S3AuthProxy:hash_body()
+    local chunk_size = self.chunk_size or 1048576
+    local hash = resty_sha256:new()
+
+    ngx.req.read_body()
+
+    local payload = ngx.req.get_body_data()
+
+    -- If body was read from memory, hash directly
+    if payload ~= nil then
+        hash:update(payload)
+    else
+        local body_data_file = ngx.req.get_body_file()
+
+        -- If no body data file, payload was empty
+        if body_data_file == nil then
+            return CONST_PAYLOAD_HASH_EMPTY
+        end
+
+        -- Otherwise, read file in chunks, updating the hash for each chunk
+        local file, msg = io_open(body_data_file, "r")
+        if file then
+            while True do
+                local data = file:read(chunk_size)
+                if data == nil then
+                    break
+                end
+                hash:update(data)
+            end
+            file:close()
+        else
+	    ngx_log(ERR, 'Client failed body signature generation - unable to open temporary file ', body_data_file)
+	    return xml_signature_mismatch()
+        end
+    end
+
+    return str_to_hex(hash:final())
+end
+
+
 function S3AuthProxy:get_encoded_args()
     local args = ngx.req.get_uri_args()
 
@@ -325,9 +360,8 @@ function S3AuthProxy:get_encoded_args()
     return tbl_concat(o, '&')
 end
 
-function S3AuthProxy:get_canonical_request(signed_headers, canonical_headers, payload)
+function S3AuthProxy:get_canonical_request(signed_headers, canonical_headers, payload_hash)
     local vars = ngx.var
-    -- Generate signed and canonical header tables from input
 
     return tbl_concat({
         vars.request_method,
@@ -336,7 +370,7 @@ function S3AuthProxy:get_canonical_request(signed_headers, canonical_headers, pa
         tbl_concat(canonical_headers, "\n") or '',
         '', -- Add newline to end of canonical headers, always
         tbl_concat(signed_headers, ";") or '',
-        sha256_string(payload)
+        payload_hash
     },"\n")
 end
 
