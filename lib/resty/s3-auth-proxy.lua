@@ -243,8 +243,8 @@ function S3AuthProxy:authenticate()
         end
     end
 
-    local canonical_request = self:get_canonical_request(signed_headers, canonical_headers, payload_hash)
-    local signature = self:generate_signature(amz_date, cred['scope'], canonical_request, access_details['aws_secret_access_key'], cred['region'], cred['service'])
+    local canonical_request_hash = self:get_canonical_request_hash(signed_headers, canonical_headers, payload_hash)
+    local signature = self:generate_signature(amz_date, cred['scope'], canonical_request_hash, access_details['aws_secret_access_key'], cred['region'], cred['service'])
 
     -- Check if signature matches
     if auth_args['signature'] ~= signature then
@@ -274,8 +274,8 @@ function S3AuthProxy:authenticate()
     ngx_log(DEBUG, 'Verified, regenerating signature!')
 
     -- Generate new signature based on local secret_access_key
-    local new_canonical_request = self:get_canonical_request(new_signed_headers, new_canonical_headers, payload_hash)
-    local new_signature = self:generate_signature(amz_date, cred['scope'], new_canonical_request, self['secret_access_key'], cred['region'], cred['service'])
+    local new_canonical_request_hash = self:get_canonical_request_hash(new_signed_headers, new_canonical_headers, payload_hash)
+    local new_signature = self:generate_signature(amz_date, cred['scope'], new_canonical_request_hash, self['secret_access_key'], cred['region'], cred['service'])
 
     local auth = tbl_concat({
         CONST_AWS_HMAC_TYPE,
@@ -354,10 +354,11 @@ function S3AuthProxy:get_encoded_args()
     return tbl_concat(o, '&')
 end
 
-function S3AuthProxy:get_canonical_request(signed_headers, canonical_headers, payload_hash)
+function S3AuthProxy:get_canonical_request_hash(signed_headers, canonical_headers, payload_hash)
     local vars = ngx.var
+    local hash = resty_sha256:new()
 
-    return tbl_concat({
+    hash:update(tbl_concat({
         vars.request_method,
         vars.uri, -- TODO: Switch this to using vars.request_uri with query_string stripped (this is *not* equivalent but works if the URL is not rewritten!)
         self:get_encoded_args(), -- Encode query string values (but *not* = delimiter)
@@ -365,16 +366,18 @@ function S3AuthProxy:get_canonical_request(signed_headers, canonical_headers, pa
         '', -- Add newline to end of canonical headers, always
         tbl_concat(signed_headers, ";") or '',
         payload_hash
-    },"\n")
+    },"\n"))
+
+    return str_to_hex(hash:final())
 end
 
 
-function S3AuthProxy:generate_signature(date, scope, canonical_request, secret_access_key, region, service)
+function S3AuthProxy:generate_signature(date, scope, canonical_request_hash, secret_access_key, region, service)
     local string_to_sign = tbl_concat({
         CONST_AWS_HMAC_TYPE,
         date,
         scope,
-        sha256_string(canonical_request)
+        canonical_request_hash
     }, "\n")
 
     local h = resty_hmac:new()
