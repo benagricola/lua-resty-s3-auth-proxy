@@ -1,6 +1,7 @@
 local ngx_log      = ngx.log
 local ERR          = ngx.ERR
 local INFO         = ngx.INFO
+local NOTICE       = ngx.NOTICE
 local DEBUG        = ngx.DEBUG
 local encode_args  = ngx.encode_args
 local re_match     = ngx.re.match
@@ -77,7 +78,14 @@ function S3AuthProxy:new(config)
         return nil
     end
 
-    local o    = { config = config, keypairs = {}, keycount = 0, secret_access_key = config['secret_access_key'] or '', access_key_id = config['access_key_id'] or '' }
+    local o    = {
+        config = config,
+        keypairs = {},
+        keycount = 0,
+        secret_access_key = config['secret_access_key'] or '',
+        access_key_id = config['access_key_id'] or '',
+        allow_passthrough = config['allow_passthrough'] or false
+    }
 
     local self = setmetatable(o, {__index = S3AuthProxy})
     self:load_keys(config['client_keys'])
@@ -123,7 +131,9 @@ end
 
 
 function S3AuthProxy:authenticate()
-    local keypairs = self['keypairs']
+    local keypairs          = self['keypairs']
+    local allow_passthrough = self['allow_passthrough']
+
     local headers = ngx.req.get_headers()
 
     local auth_header = headers['authorization']
@@ -178,11 +188,22 @@ function S3AuthProxy:authenticate()
         return xml_invalid_access_key_id()
     end
 
-    local access_details = keypairs[cred['access_key_id']]
+    local access_details
 
-    if not access_details then
-        ngx_log(ERR, 'access_key_id ', cred['access_key_id'], ' not found in configuration.')
-        return xml_invalid_access_key_id()
+    if cred['access_key_id'] == self['access_key_id'] and allow_passthrough then
+	ngx_log(NOTICE, 'Allowing key passthrough, this is insecure but client specified backend key / secret pair')
+        -- Passthrough allows the backend access / secret key to be used by a frontend client
+        -- for legacy purposes. It also skips the bucket name check as we have no valid bucket names to calculate
+        -- DISABLE PASSTHROUGH AS SOON AS ALL FRONTEND CLIENTS ARE MIGRATED TO PER-SERVER KEYS
+        access_details = { fqdn = 'LEGACY', aws_secret_access_key = self['secret_access_key'], buckets = nil }
+    else
+	access_details = keypairs[cred['access_key_id']]
+
+	if not access_details then
+	    ngx_log(ERR, 'access_key_id ', cred['access_key_id'], ' not found in configuration.')
+	    return xml_invalid_access_key_id()
+	end
+
     end
 
     -- Parse signed headers
@@ -257,17 +278,21 @@ function S3AuthProxy:authenticate()
     -- Now we need to validate the bucket that the user is accessing
     if vars.request_uri ~= '/' then
         local valid_bucket_names = access_details['buckets']
-        local found = false
-        for _, bucket_name in ipairs(valid_bucket_names) do
-            if str_sub(vars.request_uri, 0, str_len(bucket_name)) == bucket_name then
-                found = true
-                break
-            end
-        end
+        if valid_bucket_names == nil then
+	    ngx_log(NOTICE, 'Skipping bucket name check, this is insecure but usually caused by legacy use of backend key / secret pair')
+        else
+	    local found = false
+	    for _, bucket_name in ipairs(valid_bucket_names) do
+		if str_sub(vars.request_uri, 0, str_len(bucket_name)) == bucket_name then
+		    found = true
+		    break
+		end
+	    end
 
-        if not found then
-            ngx_log(ERR, 'Client ', access_details['fqdn'], ' URI ', vars.request_uri, ' does not start with one of ', tbl_concat(valid_bucket_names, ', '))
-            return xml_invalid_bucket()
+	    if not found then
+		ngx_log(ERR, 'Client ', access_details['fqdn'], ' URI ', vars.request_uri, ' does not start with one of ', tbl_concat(valid_bucket_names, ', '))
+		return xml_invalid_bucket()
+	    end
         end
     end
 
@@ -311,7 +336,7 @@ function S3AuthProxy:hash_body()
         -- Otherwise, read file in chunks, updating the hash for each chunk
         local file, msg = io_open(body_data_file, "r")
         if file then
-            while True do
+            while true do
                 local data = file:read(chunk_size)
                 if data == nil then
                     break
