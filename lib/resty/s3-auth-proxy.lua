@@ -63,18 +63,9 @@ local xml_invalid_bucket = function(msg)
     return xml_error('InvalidBucketName', (msg or 'The specified bucket is not valid.'), 400)
 end
 
-local md5_string = function(input)
-    local hash = resty_md5:new()
-    hash:update(input or '')
-    return str_to_hex(hash:final())
+local xml_bad_digest = function(msg)
+    return xml_error('BadDigest', (msg or 'The request body digest we calculated does not match the x-amz-content-sha256 header you provided.'), 400)
 end
-
-local sha256_string = function(input)
-    local hash = resty_sha256:new()
-    hash:update(input or '')
-    return str_to_hex(hash:final())
-end
-
 
 -- Auth proxy Public Interface
 local S3AuthProxy = {}
@@ -228,6 +219,14 @@ function S3AuthProxy:authenticate()
         payload_hash = self:hash_body()
     end
 
+    ngx_log(DEBUG, 'Calculated Payload SHA256: ', payload_hash)
+    ngx_log(DEBUG, 'Header     Payload SHA256: ', amz_content)
+
+    -- Check if payload hash matches
+    if payload_hash ~= amz_content then
+        ngx_log(ERR, 'Client ', access_details['fqdn'], ' payload hash mismatch: ', payload_hash, ' invalid (', amz_content, ' expected)')
+        return xml_bad_digest()
+    end
 
     -- Generate signed and canonical header tables from input
     local signed_headers        = {}
@@ -245,11 +244,7 @@ function S3AuthProxy:authenticate()
     end
 
     local canonical_request = self:get_canonical_request(signed_headers, canonical_headers, payload_hash)
-
     local signature = self:generate_signature(amz_date, cred['scope'], canonical_request, access_details['aws_secret_access_key'], cred['region'], cred['service'])
-
-    ngx_log(DEBUG, 'Calculated Payload SHA256: ', payload_hash)
-    ngx_log(DEBUG, 'Header     Payload SHA256: ', amz_content)
 
     -- Check if signature matches
     if auth_args['signature'] ~= signature then
@@ -260,7 +255,6 @@ function S3AuthProxy:authenticate()
     end
 
     -- Now we need to validate the bucket that the user is accessing
-
     if vars.request_uri ~= '/' then
         local valid_bucket_names = access_details['buckets']
         local found = false
@@ -280,7 +274,7 @@ function S3AuthProxy:authenticate()
     ngx_log(DEBUG, 'Verified, regenerating signature!')
 
     -- Generate new signature based on local secret_access_key
-    local new_canonical_request = self:get_canonical_request(new_signed_headers, new_canonical_headers, payload)
+    local new_canonical_request = self:get_canonical_request(new_signed_headers, new_canonical_headers, payload_hash)
     local new_signature = self:generate_signature(amz_date, cred['scope'], new_canonical_request, self['secret_access_key'], cred['region'], cred['service'])
 
     local auth = tbl_concat({
