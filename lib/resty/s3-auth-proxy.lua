@@ -232,12 +232,14 @@ function S3AuthProxy:authenticate()
 
     -- Signed Chunked upload
     if amz_content == CONST_AWS_PAYLOAD_STREAMING then
-        ngx_log(ERR, CONST_AWS_PAYLOAD_STREAMING, ' is not supported.')
-        return xml_invalid_request(CONST_AWS_PAYLOAD_STREAMING .. ' is not supported.')
+        -- Temporarily allow streaming payload passthrough
+        payload_hash = CONST_AWS_PAYLOAD_STREAMING
+        -- ngx_log(ERR, CONST_AWS_PAYLOAD_STREAMING, ' is not supported.')
+        -- return xml_invalid_request(CONST_AWS_PAYLOAD_STREAMING .. ' is not supported.')
 
     -- Unsigned upload
     elseif amz_content == CONST_AWS_PAYLOAD_UNSIGNED then
-        payload_hash = CONST_PAYLOAD_HASH_EMPTY
+        payload_hash = CONST_AWS_PAYLOAD_UNSIGNED
 
     -- Signed single upload
     else
