@@ -37,6 +37,9 @@ local xml_error_format = [[<?xml version="1.0" encoding="UTF-8"?>
 </Error>
 ]]
 
+-- Trim spaces as well
+local auth_header_regex = "\\s*(?<name>[^=\\s]+)\\s*=\\s*(?<value>[^,\\s]+)*\\s*,?"
+local cred_header_regex = "(?<access_key_id>[A-Z0-9]+)\\/(?<scope>(?<date>[0-9]{8})\\/(?<region>[a-zA-Z0-9\\-]+)\\/(?<service>[a-zA-Z0-9\\-]+)\\/aws4_request)"
 
 local xml_error = function(err_code, err_msg, status, resource, id)
     ngx_log(ERR, err_code)
@@ -79,11 +82,12 @@ function S3AuthProxy:new(config)
     end
 
     local o    = {
-        config = config,
-        keypairs = {},
-        keycount = 0,
+        config            = config,
+        keypairs          = {},
+        keycount          = 0,
         secret_access_key = config['secret_access_key'] or '',
-        access_key_id = config['access_key_id'] or '',
+        access_key_id     = config['access_key_id'] or '',
+        region            = nil, -- Override upstream region
         allow_passthrough = config['allow_passthrough'] or false
     }
 
@@ -162,7 +166,7 @@ function S3AuthProxy:authenticate()
     end
 
     -- Parse remaining auth header variables
-    local auth_remaining_items, err = re_gmatch(auth_parts['remaining'], "(?<name>[^=]+)=(?<value>[^,]+)*,?", "jo")
+    local auth_remaining_items, err = re_gmatch(auth_parts['remaining'], auth_header_regex, "jo")
 
     if not auth_remaining_items then
         ngx_log(ERR, 'auth_remaining_items regex failed: ', err)
@@ -181,7 +185,7 @@ function S3AuthProxy:authenticate()
     end
 
     -- Parse credential
-    local cred, err = re_match(auth_args['credential'], "(?<access_key_id>[A-Z0-9]+)\\/(?<scope>(?<date>[0-9]{8})\\/(?<region>[a-zA-Z0-9\\-]+)\\/(?<service>[a-zA-Z0-9\\-]+)\\/aws4_request)", "jo")
+    local cred, err = re_match(auth_args['credential'], cred_header_regex, "jo")
 
     if not cred then
         ngx_log(ERR, 'cred regex failed: ', err)
@@ -298,9 +302,11 @@ function S3AuthProxy:authenticate()
 
     ngx_log(DEBUG, 'Verified, regenerating signature!')
 
+    local upstream_region   = self['region'] or cred['region']
+
     -- Generate new signature based on local secret_access_key
     local new_canonical_request_hash = self:get_canonical_request_hash(new_signed_headers, new_canonical_headers, payload_hash)
-    local new_signature = self:generate_signature(amz_date, cred['scope'], new_canonical_request_hash, self['secret_access_key'], cred['region'], cred['service'])
+    local new_signature = self:generate_signature(amz_date, cred['scope'], new_canonical_request_hash, self['secret_access_key'], upstream_region, cred['service'])
 
     local auth = tbl_concat({
         CONST_AWS_HMAC_TYPE,
